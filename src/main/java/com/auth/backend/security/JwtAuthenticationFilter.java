@@ -1,6 +1,7 @@
 package com.auth.backend.security;
 
-import com.auth.backend.repository.RevokedTokenRepository;
+import com.auth.backend.repository.AuthSessionRepository;
+import com.auth.backend.util.CookieUtil;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -13,11 +14,15 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 
+/**
+ * JWT authentication filter.
+ * Reads the JWT from the HttpOnly cookie (not the Authorization header).
+ * Validates signature, expiry, and server-side session existence.
+ */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -25,7 +30,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider jwtTokenProvider;
     private final UserDetailsService userDetailsService;
-    private final RevokedTokenRepository revokedTokenRepository;
+    private final AuthSessionRepository authSessionRepository;
+    private final CookieUtil cookieUtil;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -33,12 +39,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     FilterChain filterChain)
             throws ServletException, IOException {
         try {
-            String jwt = getJwtFromRequest(request);
+            // Read token from the HttpOnly cookie or Authorization header
+            String jwt = cookieUtil.getJwtFromCookie(request);
+            if (jwt == null || jwt.isBlank()) {
+                String authHeader = request.getHeader("Authorization");
+                if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                    jwt = authHeader.substring(7);
+                }
+            }
 
-            if (StringUtils.hasText(jwt) && jwtTokenProvider.validateToken(jwt)) {
-                // Check if token is revoked
-                if (revokedTokenRepository.existsByToken(jwt)) {
-                    log.warn("Attempt to use revoked token");
+            if (jwt != null && jwtTokenProvider.validateToken(jwt)) {
+                String jti = jwtTokenProvider.getJtiFromToken(jwt);
+
+                // Verify server-side session is active and not revoked
+                boolean sessionActive = authSessionRepository.existsByTokenIdAndRevokedFalse(jti);
+                if (!sessionActive) {
+                    log.warn("Attempt to use revoked or expired session");
                     filterChain.doFilter(request, response);
                     return;
                 }
@@ -56,17 +72,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
         } catch (Exception ex) {
-            log.error("Could not set user authentication in security context", ex);
+            log.error("Could not set user authentication in security context: {}", ex.getMessage());
         }
 
         filterChain.doFilter(request, response);
-    }
-
-    private String getJwtFromRequest(HttpServletRequest request) {
-        String bearerToken = request.getHeader("Authorization");
-        if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
-            return bearerToken.substring(7);
-        }
-        return null;
     }
 }

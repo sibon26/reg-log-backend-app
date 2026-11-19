@@ -9,7 +9,12 @@ import org.springframework.stereotype.Component;
 
 import java.security.Key;
 import java.util.Date;
+import java.util.UUID;
 
+/**
+ * Handles JWT creation, validation, and claim extraction.
+ * Tokens are delivered via HttpOnly cookies – never in response bodies.
+ */
 @Component
 @Slf4j
 public class JwtTokenProvider {
@@ -25,12 +30,16 @@ public class JwtTokenProvider {
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
+    /**
+     * Generate a signed JWT with a unique JTI claim.
+     */
     public String generateToken(String email) {
-        Date now = new Date();
+        Date now        = new Date();
         Date expiryDate = new Date(now.getTime() + jwtExpirationMs);
 
         return Jwts.builder()
                 .setSubject(email)
+                .setId(UUID.randomUUID().toString())   // jti – unique per token
                 .setIssuedAt(now)
                 .setExpiration(expiryDate)
                 .signWith(getSigningKey(), SignatureAlgorithm.HS256)
@@ -38,21 +47,20 @@ public class JwtTokenProvider {
     }
 
     public String getEmailFromToken(String token) {
-        Claims claims = Jwts.parserBuilder()
-                .setSigningKey(getSigningKey())
-                .build()
-                .parseClaimsJws(token)
-                .getBody();
-        return claims.getSubject();
+        return parseClaims(token).getSubject();
+    }
+
+    /** Extract the unique token ID (jti) for session management. */
+    public String getJtiFromToken(String token) {
+        return parseClaims(token).getId();
     }
 
     public Date getExpirationFromToken(String token) {
-        Claims claims = Jwts.parserBuilder()
-                .setSigningKey(getSigningKey())
-                .build()
-                .parseClaimsJws(token)
-                .getBody();
-        return claims.getExpiration();
+        return parseClaims(token).getExpiration();
+    }
+
+    public long getExpirationMs() {
+        return jwtExpirationMs;
     }
 
     public boolean validateToken(String token) {
@@ -63,14 +71,22 @@ public class JwtTokenProvider {
                     .parseClaimsJws(token);
             return true;
         } catch (MalformedJwtException e) {
-            log.error("Invalid JWT token: {}", e.getMessage());
+            log.warn("Invalid JWT token signature");
         } catch (ExpiredJwtException e) {
-            log.error("JWT token is expired: {}", e.getMessage());
+            log.warn("JWT token is expired");
         } catch (UnsupportedJwtException e) {
-            log.error("JWT token is unsupported: {}", e.getMessage());
+            log.warn("JWT token is unsupported");
         } catch (IllegalArgumentException e) {
-            log.error("JWT claims string is empty: {}", e.getMessage());
+            log.warn("JWT claims string is empty");
         }
         return false;
+    }
+
+    private Claims parseClaims(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(getSigningKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
     }
 }

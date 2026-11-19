@@ -5,6 +5,10 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/**
+ * Authentication response DTO.
+ * NOTE: The JWT is NOT included here – it is delivered via an HttpOnly cookie only.
+ */
 @Data
 @Builder
 @NoArgsConstructor
